@@ -7,13 +7,14 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use miette::{IntoDiagnostic, WrapErr};
+use rayon::prelude::*;
 
 use cache::{
     cache_key, check_cache_path, compute_file_metadata, file_fingerprint, load_check_cache,
     save_check_cache, CacheEntry, FileMetadata,
 };
 use deps::{compute_invalidation_set, DepGraph};
-use crate::{frontend, FrontendTiming};
+use crate::{frontend, FrontendArtifacts, FrontendTiming};
 
 pub fn check(path: &Path, changed: bool, timings: bool) -> miette::Result<()> {
     let command_start = Instant::now();
@@ -82,8 +83,12 @@ pub fn check(path: &Path, changed: bool, timings: bool) -> miette::Result<()> {
         let mut fingerprint_changed_keys: HashSet<String> = HashSet::new();
         let mut api_changed_keys: HashSet<String> = HashSet::new();
 
-        for &idx in &fingerprint_changed_indices {
-            let meta = compute_file_metadata(&targets[idx])?;
+        let meta_results: Vec<(usize, FileMetadata)> = fingerprint_changed_indices
+            .par_iter()
+            .map(|&idx| compute_file_metadata(&targets[idx]).map(|m| (idx, m)))
+            .collect::<miette::Result<Vec<_>>>()?;
+
+        for (idx, meta) in meta_results {
             let cached_api = cache.get(&target_keys[idx]).map(|entry| entry.api_hash);
             if cached_api != Some(meta.api_hash) {
                 api_changed_keys.insert(target_keys[idx].clone());
@@ -148,8 +153,12 @@ pub fn check(path: &Path, changed: bool, timings: bool) -> miette::Result<()> {
             .collect();
         targets_to_check.sort();
 
-        for &idx in &targets_to_check {
-            let artifacts = frontend(&targets[idx])?;
+        let frontend_results: Vec<(usize, FrontendArtifacts)> = targets_to_check
+            .par_iter()
+            .map(|&idx| frontend(&targets[idx]).map(|a| (idx, a)))
+            .collect::<miette::Result<Vec<_>>>()?;
+
+        for (idx, artifacts) in &frontend_results {
             checked += 1;
             frontend_total += artifacts.timing.total();
             if is_single_target {
@@ -157,8 +166,8 @@ pub fn check(path: &Path, changed: bool, timings: bool) -> miette::Result<()> {
             }
 
             // Compute metadata for files we check but hadn't computed yet.
-            if current_metadata[idx].is_none() {
-                current_metadata[idx] = Some(compute_file_metadata(&targets[idx])?);
+            if current_metadata[*idx].is_none() {
+                current_metadata[*idx] = Some(compute_file_metadata(&targets[*idx])?);
             }
         }
 
@@ -208,8 +217,12 @@ pub fn check(path: &Path, changed: bool, timings: bool) -> miette::Result<()> {
 
         save_check_cache(&cache_path, &cache)?;
     } else {
-        for target in &targets {
-            let artifacts = frontend(target)?;
+        let results: Vec<FrontendArtifacts> = targets
+            .par_iter()
+            .map(|target| frontend(target))
+            .collect::<miette::Result<Vec<_>>>()?;
+
+        for artifacts in &results {
             checked += 1;
             frontend_total += artifacts.timing.total();
             if is_single_target {

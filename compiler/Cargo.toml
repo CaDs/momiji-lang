@@ -17,6 +17,9 @@ cranelift-object = "0.116"
 cranelift-native = "0.116"
 target-lexicon = "0.13"
 
+# Parallel iteration
+rayon = "1"
+
 # CLI and error handling
 clap = { version = "4", features = ["derive"] }
 thiserror = "1"

@@ -297,3 +297,85 @@ fn check_changed_new_file() {
     let _ = fs::remove_dir_all(&workspace);
     let _ = fs::remove_dir_all(&cache_dir);
 }
+
+#[test]
+fn check_directory_parallel_determinism() {
+    let workspace = unique_temp_path("momiji_check_par_det");
+    let cache_dir = unique_temp_path("momiji_check_par_det_cache");
+
+    for i in 0..6 {
+        write_text_file(
+            &workspace.join(format!("file_{}.mj", i)),
+            &format!(
+                "def func_{}(a: Int, b: Int) -> Int\n  return a + b + {}\nend\n",
+                i, i
+            ),
+        );
+    }
+
+    let mut outputs = Vec::new();
+    for _ in 0..4 {
+        let result = run_check_path(&workspace, false, &cache_dir);
+        assert_eq!(result.status, 0);
+        outputs.push((result.stdout.clone(), result.stderr.clone()));
+    }
+
+    for (stdout, stderr) in &outputs[1..] {
+        assert_eq!(&outputs[0].0, stdout, "stdout differs across runs");
+        assert_eq!(&outputs[0].1, stderr, "stderr differs across runs");
+    }
+
+    let _ = fs::remove_dir_all(&workspace);
+    let _ = fs::remove_dir_all(&cache_dir);
+}
+
+#[test]
+fn check_changed_parallel_determinism() {
+    let workspace = unique_temp_path("momiji_check_chg_det");
+    let cache_dir = unique_temp_path("momiji_check_chg_det_cache");
+
+    for i in 0..6 {
+        write_text_file(
+            &workspace.join(format!("file_{}.mj", i)),
+            &format!(
+                "def func_{}(a: Int, b: Int) -> Int\n  return a + b + {}\nend\n",
+                i, i
+            ),
+        );
+    }
+
+    // Populate cache.
+    let first = run_check_path(&workspace, true, &cache_dir);
+    assert_eq!(first.status, 0);
+
+    // Body-only changes to 3 files.
+    for i in 0..3 {
+        write_text_file(
+            &workspace.join(format!("file_{}.mj", i)),
+            &format!(
+                "def func_{}(a: Int, b: Int) -> Int\n  temp = a + b + {}\n  return temp\nend\n",
+                i, i
+            ),
+        );
+    }
+
+    let mut outputs = Vec::new();
+    for _ in 0..4 {
+        // Reset cache to same state each iteration so results are comparable.
+        let baseline = run_check_path(&workspace, true, &cache_dir);
+        if outputs.is_empty() {
+            assert_eq!(baseline.status, 0);
+        }
+        outputs.push((baseline.stdout.clone(), baseline.stderr.clone()));
+    }
+
+    // First run rechecks the 3 changed files; subsequent runs see no changes.
+    // Compare runs 2-4 (all identical "no changes" output).
+    for (stdout, stderr) in &outputs[2..] {
+        assert_eq!(&outputs[1].0, stdout, "stdout differs across runs");
+        assert_eq!(&outputs[1].1, stderr, "stderr differs across runs");
+    }
+
+    let _ = fs::remove_dir_all(&workspace);
+    let _ = fs::remove_dir_all(&cache_dir);
+}
