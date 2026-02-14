@@ -1,0 +1,17 @@
+---
+source: tests/cli_check.rs
+expression: snapshot_view(&result)
+---
+status: 1
+--- stdout ---
+--- stderr ---
+types::mismatch
+
+  × Type mismatch: expected Int, found String
+   ╭─[type_mismatch.mj:2:3]
+ 1 │ def main
+ 2 │   let x: Int = "hello"
+   ·   ──────────┬─────────
+   ·             ╰── expected Int here
+ 3 │ end
+   ╰────

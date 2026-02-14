@@ -1,0 +1,19 @@
+---
+source: tests/cli_check.rs
+expression: snapshot_view(&result)
+---
+status: 1
+--- stdout ---
+--- stderr ---
+types::missing_return
+
+  × Not all code paths in function 'maybe_answer' return a value
+   ╭─[missing_return_branch.mj:1:1]
+ 1 │ ╭─▶ def maybe_answer(flag: Bool) -> Int
+ 2 │ │     if flag
+ 3 │ │       return 1
+ 4 │ ├─▶   end
+   · ╰──── function may exit without returning
+ 5 │     end
+ 6 │     
+   ╰────

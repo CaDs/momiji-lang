@@ -1,0 +1,16 @@
+# If/else test
+def main
+  x = 10
+  if x > 5
+    puts(1)  # Should print
+  else
+    puts(0)
+  end
+
+  if x < 5
+    puts(0)
+  else
+    puts(2)  # Should print
+  end
+end
+# Expected output: 1, 2

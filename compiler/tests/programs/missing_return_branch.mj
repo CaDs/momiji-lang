@@ -1,0 +1,9 @@
+def maybe_answer(flag: Bool) -> Int
+  if flag
+    return 1
+  end
+end
+
+def main
+  puts(maybe_answer(true))
+end

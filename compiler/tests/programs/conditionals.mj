@@ -1,0 +1,14 @@
+def main
+  x = 10
+  if x > 5
+    puts(1)
+  else
+    puts(0)
+  end
+
+  if x < 5
+    puts(0)
+  else
+    puts(2)
+  end
+end

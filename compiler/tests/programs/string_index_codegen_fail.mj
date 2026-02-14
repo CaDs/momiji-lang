@@ -1,0 +1,4 @@
+def main
+  s = "abc"
+  puts(s[1])
+end

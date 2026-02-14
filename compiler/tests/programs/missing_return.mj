@@ -1,0 +1,7 @@
+def answer -> Int
+  x = 1
+end
+
+def main
+  puts(answer())
+end

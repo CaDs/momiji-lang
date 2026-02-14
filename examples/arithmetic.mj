@@ -1,0 +1,11 @@
+# Basic arithmetic example
+def main
+  x = 10 + 20 * 2
+  puts(x)  # Should print 50
+
+  y = (5 + 3) * 4
+  puts(y)  # Should print 32
+
+  z = 100 / 4 - 5
+  puts(z)  # Should print 20
+end

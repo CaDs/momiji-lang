@@ -1,0 +1,8 @@
+def main
+  r = 3..6
+  puts(r[0])
+  puts(r[2])
+
+  s = 3...6
+  puts(s[3])
+end

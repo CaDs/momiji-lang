@@ -1,0 +1,8 @@
+---
+source: tests/cli_check.rs
+expression: snapshot_view(&result)
+---
+status: 0
+--- stdout ---
+No errors found in <MANIFEST_DIR>/tests/programs/branch_returns_ok.mj
+--- stderr ---

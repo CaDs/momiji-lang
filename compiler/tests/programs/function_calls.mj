@@ -1,0 +1,11 @@
+def add(a: Int, b: Int) -> Int
+  return a + b
+end
+
+def twice(x: Int) -> Int
+  return x * 2
+end
+
+def main
+  puts(twice(add(10, 5)))
+end

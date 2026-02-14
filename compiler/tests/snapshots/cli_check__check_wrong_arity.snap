@@ -1,0 +1,17 @@
+---
+source: tests/cli_check.rs
+expression: snapshot_view(&result)
+---
+status: 1
+--- stdout ---
+--- stderr ---
+types::wrong_arity
+
+  × Function 'plus_one' expects 1 arguments, found 0
+   ╭─[wrong_arity.mj:6:16]
+ 5 │ def main
+ 6 │   puts(plus_one())
+   ·                ─┬
+   ·                 ╰── here
+ 7 │ end
+   ╰────

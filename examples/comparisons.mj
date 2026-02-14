@@ -1,0 +1,11 @@
+# Comparison operators test
+def main
+  # Test all comparison operators
+  puts(10 > 5)   # true (1)
+  puts(10 < 5)   # false (0)
+  puts(10 == 10) # true (1)
+  puts(10 != 5)  # true (1)
+  puts(5 >= 5)   # true (1)
+  puts(4 <= 3)   # false (0)
+end
+# Expected output: 1, 0, 1, 1, 1, 0

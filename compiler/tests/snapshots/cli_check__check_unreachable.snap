@@ -1,0 +1,17 @@
+---
+source: tests/cli_check.rs
+expression: snapshot_view(&result)
+---
+status: 1
+--- stdout ---
+--- stderr ---
+types::unreachable_code
+
+  × Unreachable code
+   ╭─[unreachable.mj:3:3]
+ 2 │   return
+ 3 │   x = 1
+   ·   ──┬──
+   ·     ╰── this statement is unreachable
+ 4 │ end
+   ╰────

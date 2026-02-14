@@ -1,0 +1,17 @@
+---
+source: tests/cli_check.rs
+expression: snapshot_view(&result)
+---
+status: 1
+--- stdout ---
+--- stderr ---
+types::undefined_function
+
+  × Undefined function 'nope'
+   ╭─[undefined_function.mj:2:7]
+ 1 │ def main
+ 2 │   nope()
+   ·       ─┬
+   ·        ╰── not found
+ 3 │ end
+   ╰────

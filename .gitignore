@@ -1,0 +1,5 @@
+# Rust build artifacts
+/compiler/target/
+
+# Momiji check cache
+.momiji/

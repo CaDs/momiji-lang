@@ -1,0 +1,7 @@
+# Simple if test
+def main
+  x = 10
+  if x > 5
+    puts(1)
+  end
+end

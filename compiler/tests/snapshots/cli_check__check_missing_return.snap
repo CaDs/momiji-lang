@@ -1,0 +1,17 @@
+---
+source: tests/cli_check.rs
+expression: snapshot_view(&result)
+---
+status: 1
+--- stdout ---
+--- stderr ---
+types::missing_return
+
+  × Not all code paths in function 'answer' return a value
+   ╭─[missing_return.mj:1:1]
+ 1 │ ╭─▶ def answer -> Int
+ 2 │ ├─▶   x = 1
+   · ╰──── function may exit without returning
+ 3 │     end
+ 4 │     
+   ╰────

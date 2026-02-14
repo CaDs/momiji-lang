@@ -1,0 +1,12 @@
+def answer(flag: Bool) -> Int
+  if flag
+    return 10
+  else
+    return 20
+  end
+end
+
+def main
+  puts(answer(true))
+  puts(answer(false))
+end

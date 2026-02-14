@@ -1,0 +1,9 @@
+---
+source: tests/cli_run_cranelift.rs
+expression: snapshot_view(&result)
+---
+status: 0
+--- stdout ---
+Compiled to <TEMP_EXE>
+Hello, Momiji!
+--- stderr ---

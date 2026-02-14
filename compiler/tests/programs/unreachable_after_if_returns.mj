@@ -1,0 +1,9 @@
+def main
+  if true
+    return
+  else
+    return
+  end
+
+  x = 10
+end

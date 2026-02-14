@@ -1,0 +1,8 @@
+---
+source: tests/cli_run_interp.rs
+expression: snapshot_view(&result)
+---
+status: 0
+--- stdout ---
+Hello, Momiji!
+--- stderr ---

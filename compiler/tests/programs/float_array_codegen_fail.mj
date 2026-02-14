@@ -1,0 +1,4 @@
+def main
+  arr = [1.5, 2.5]
+  puts(arr[0])
+end

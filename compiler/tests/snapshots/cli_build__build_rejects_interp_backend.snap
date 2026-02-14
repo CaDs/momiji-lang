@@ -1,0 +1,9 @@
+---
+source: tests/cli_build.rs
+expression: snapshot_view(&result)
+---
+status: 1
+--- stdout ---
+--- stderr ---
+  × `build` does not support --backend interp; use `run --backend interp`
+  │ instead

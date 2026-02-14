@@ -1,0 +1,17 @@
+---
+source: tests/cli_check.rs
+expression: snapshot_view(&result)
+---
+status: 1
+--- stdout ---
+--- stderr ---
+types::undefined_variable
+
+  × Undefined variable 'x'
+   ╭─[undefined_var.mj:2:8]
+ 1 │ def main
+ 2 │   puts(x)
+   ·        ┬
+   ·        ╰── not found in scope
+ 3 │ end
+   ╰────

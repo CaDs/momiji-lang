@@ -1,0 +1,8 @@
+def main
+  puts(10 > 5)
+  puts(10 < 5)
+  puts(10 == 10)
+  puts(10 != 5)
+  puts(5 >= 5)
+  puts(4 <= 3)
+end

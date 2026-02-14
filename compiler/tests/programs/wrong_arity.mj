@@ -1,0 +1,7 @@
+def plus_one(x: Int) -> Int
+  return x + 1
+end
+
+def main
+  puts(plus_one())
+end
