@@ -330,6 +330,31 @@ fn check_directory_parallel_determinism() {
 }
 
 #[test]
+fn check_changed_cache_version_mismatch() {
+    let workspace = unique_temp_path("momiji_check_ver");
+    let cache_dir = unique_temp_path("momiji_check_ver_cache");
+    write_text_file(
+        &workspace.join("a.mj"),
+        "def add(a: Int, b: Int) -> Int\n  return a + b\nend\n",
+    );
+
+    // Write a cache file with a bogus version header
+    let cache_file = cache_dir.join("check-cache.tsv");
+    write_text_file(&cache_file, "# momiji-cache v999 compiler=0.0.0\n/fake\t1\t2\t3\n");
+
+    let result = run_check_path(&workspace, true, &cache_dir);
+    assert_eq!(result.status, 0);
+    assert!(
+        result.stderr.contains("Cache invalidated"),
+        "expected cache invalidation message, stderr: {}",
+        result.stderr
+    );
+
+    let _ = fs::remove_dir_all(&workspace);
+    let _ = fs::remove_dir_all(&cache_dir);
+}
+
+#[test]
 fn check_changed_parallel_determinism() {
     let workspace = unique_temp_path("momiji_check_chg_det");
     let cache_dir = unique_temp_path("momiji_check_chg_det_cache");
@@ -378,4 +403,183 @@ fn check_changed_parallel_determinism() {
 
     let _ = fs::remove_dir_all(&workspace);
     let _ = fs::remove_dir_all(&cache_dir);
+}
+
+#[test]
+fn check_directory_reports_all_errors() {
+    let workspace = unique_temp_path("momiji_check_all_err");
+    let cache_dir = unique_temp_path("momiji_check_all_err_cache");
+
+    // 1 valid file + 2 invalid files
+    write_text_file(
+        &workspace.join("a_valid.mj"),
+        "def add(a: Int, b: Int) -> Int\n  return a + b\nend\n",
+    );
+    write_text_file(
+        &workspace.join("b_error.mj"),
+        "def bad1 -> Int\n  x = 10\nend\n", // missing return
+    );
+    write_text_file(
+        &workspace.join("c_error.mj"),
+        "def bad2 -> Int\n  y = 20\nend\n", // missing return
+    );
+
+    let result = run_check_path(&workspace, false, &cache_dir);
+    assert_ne!(result.status, 0);
+    // Both error files should have diagnostics
+    assert!(
+        result.stderr.contains("bad1"),
+        "expected diagnostic for bad1, stderr: {}",
+        result.stderr
+    );
+    assert!(
+        result.stderr.contains("bad2"),
+        "expected diagnostic for bad2, stderr: {}",
+        result.stderr
+    );
+    assert!(
+        result.stderr.contains("Found errors in 2 of 3 file(s)"),
+        "expected summary line, stderr: {}",
+        result.stderr
+    );
+
+    let _ = fs::remove_dir_all(&workspace);
+    let _ = fs::remove_dir_all(&cache_dir);
+}
+
+#[test]
+fn check_directory_single_error_among_valid() {
+    let workspace = unique_temp_path("momiji_check_one_err");
+    let cache_dir = unique_temp_path("momiji_check_one_err_cache");
+
+    write_text_file(
+        &workspace.join("a_valid.mj"),
+        "def add(a: Int, b: Int) -> Int\n  return a + b\nend\n",
+    );
+    write_text_file(
+        &workspace.join("b_error.mj"),
+        "def bad1 -> Int\n  x = 10\nend\n", // missing return
+    );
+
+    let result = run_check_path(&workspace, false, &cache_dir);
+    assert_ne!(result.status, 0);
+    assert!(
+        result.stderr.contains("Found errors in 1 of 2 file(s)"),
+        "expected summary line, stderr: {}",
+        result.stderr
+    );
+
+    let _ = fs::remove_dir_all(&workspace);
+    let _ = fs::remove_dir_all(&cache_dir);
+}
+
+#[test]
+fn check_single_file_error_unchanged() {
+    // Single file with error should behave as before (no summary line, just the diagnostic)
+    let result = run_check_fixture("missing_return.mj");
+    assert_ne!(result.status, 0);
+    assert!(
+        !result.stderr.contains("Found errors in"),
+        "single file should not have summary line, stderr: {}",
+        result.stderr
+    );
+    assert!(result.stderr.contains("missing_return"));
+}
+
+#[test]
+fn check_changed_errors_still_cache_successes() {
+    let workspace = unique_temp_path("momiji_check_err_cache");
+    let cache_dir = unique_temp_path("momiji_check_err_cache_dir");
+
+    let valid_path = workspace.join("a_valid.mj");
+    let error_path = workspace.join("b_error.mj");
+
+    write_text_file(
+        &valid_path,
+        "def add(a: Int, b: Int) -> Int\n  return a + b\nend\n",
+    );
+    write_text_file(
+        &error_path,
+        "def bad1 -> Int\n  x = 10\nend\n", // missing return
+    );
+
+    // First run: valid file succeeds, error file fails
+    let first = run_check_path(&workspace, true, &cache_dir);
+    assert_ne!(first.status, 0);
+
+    // Fix the error file
+    write_text_file(
+        &error_path,
+        "def bad1 -> Int\n  return 42\nend\n",
+    );
+
+    // Second run: valid file should be cached, only error file rechecked
+    let second = run_check_path(&workspace, true, &cache_dir);
+    assert_eq!(second.status, 0);
+    assert!(
+        second.stdout.contains("1 checked file(s) (1 skipped)"),
+        "expected only fixed file rechecked, stdout: {}",
+        second.stdout
+    );
+
+    let _ = fs::remove_dir_all(&workspace);
+    let _ = fs::remove_dir_all(&cache_dir);
+}
+
+// --- Struct tests ---
+
+#[test]
+fn check_valid_struct_basic() {
+    let result = run_check_fixture("struct_basic.mj");
+    assert_eq!(result.status, 0);
+    assert_snapshot!("check_valid_struct_basic", snapshot_view(&result));
+}
+
+#[test]
+fn check_valid_struct_in_function() {
+    let result = run_check_fixture("struct_in_function.mj");
+    assert_eq!(result.status, 0);
+    assert_snapshot!("check_valid_struct_in_function", snapshot_view(&result));
+}
+
+#[test]
+fn check_struct_type_error() {
+    let result = run_check_fixture("struct_type_error.mj");
+    assert_ne!(result.status, 0);
+    assert_snapshot!("check_struct_type_error", snapshot_view(&result));
+}
+
+#[test]
+fn check_struct_undefined_field() {
+    let result = run_check_fixture("struct_undefined_field.mj");
+    assert_ne!(result.status, 0);
+    assert_snapshot!("check_struct_undefined_field", snapshot_view(&result));
+}
+
+#[test]
+fn check_valid_match_literal() {
+    let result = run_check_fixture("match_literal.mj");
+    assert_eq!(result.status, 0);
+    assert_snapshot!("check_valid_match_literal", snapshot_view(&result));
+}
+
+#[test]
+fn check_valid_match_variable() {
+    let result = run_check_fixture("match_variable.mj");
+    assert_eq!(result.status, 0);
+    assert_snapshot!("check_valid_match_variable", snapshot_view(&result));
+}
+
+#[test]
+fn check_valid_match_in_function() {
+    let result = run_check_fixture("match_in_function.mj");
+    assert_eq!(result.status, 0);
+    assert_snapshot!("check_valid_match_in_function", snapshot_view(&result));
+}
+
+#[test]
+fn check_match_type_error() {
+    let result = run_check_fixture("match_type_error.mj");
+    assert_ne!(result.status, 0);
+    assert_snapshot!("check_match_type_error", snapshot_view(&result));
 }

@@ -57,8 +57,9 @@ impl Parser {
     fn parse_item(&mut self) -> Result<Item, ParseError> {
         match self.peek_kind() {
             TokenKind::Def => Ok(Item::Function(self.parse_function()?)),
+            TokenKind::Struct => Ok(Item::Struct(self.parse_struct()?)),
             _ => Err(ParseError::UnexpectedToken {
-                expected: "function definition".to_string(),
+                expected: "function or struct definition".to_string(),
                 found: self.peek().kind.description().to_string(),
                 span: self.peek().span.into(),
             }),
@@ -112,6 +113,46 @@ impl Parser {
             return_type,
             body,
             span: start_span.merge(end_span),
+        })
+    }
+
+    /// Parse a struct definition
+    fn parse_struct(&mut self) -> Result<StructDef, ParseError> {
+        let start_span = self.peek().span;
+        self.expect(TokenKind::Struct)?;
+
+        let name = self.expect_identifier()?;
+        self.skip_newlines();
+
+        let mut fields = Vec::new();
+        while self.check(&TokenKind::Property) {
+            let field_start = self.peek().span;
+            self.advance(); // consume 'property'
+            let field_name = self.expect_identifier()?;
+            self.expect(TokenKind::Colon)?;
+            let ty = self.parse_type()?;
+            let field_end = self.previous().span;
+            fields.push(FieldDef {
+                name: field_name,
+                ty,
+                span: field_start.merge(field_end),
+            });
+            self.skip_newlines();
+        }
+
+        let error_span = self.peek().span;
+        if let Err(_) = self.expect(TokenKind::End) {
+            return Err(ParseError::UnexpectedToken {
+                expected: "'end' to close struct definition".to_string(),
+                found: self.peek_kind().description().to_string(),
+                span: error_span.into(),
+            });
+        }
+
+        Ok(StructDef {
+            name,
+            fields,
+            span: start_span.merge(self.previous().span),
         })
     }
 
@@ -184,6 +225,7 @@ impl Parser {
         while !self.check(&TokenKind::End)
             && !self.check(&TokenKind::Else)
             && !self.check(&TokenKind::Elsif)
+            && !self.check(&TokenKind::When)
             && !self.is_at_end()
         {
             stmts.push(self.parse_statement()?);
@@ -201,6 +243,7 @@ impl Parser {
             TokenKind::While => self.parse_while(),
             TokenKind::For => self.parse_for(),
             TokenKind::Let => self.parse_let(),
+            TokenKind::Match => self.parse_match(),
             _ => self.parse_expr_or_assignment(),
         }
     }
@@ -302,6 +345,129 @@ impl Parser {
             body,
             span: span_start.merge(self.previous().span),
         })
+    }
+
+    /// Parse a match statement
+    fn parse_match(&mut self) -> Result<Stmt, ParseError> {
+        let span_start = self.peek().span;
+        self.advance(); // consume 'match'
+
+        let subject = self.parse_expression()?;
+        self.skip_newlines();
+
+        let mut arms = Vec::new();
+        while self.check(&TokenKind::When) {
+            let arm_start = self.peek().span;
+            self.advance(); // consume 'when'
+
+            let pattern = self.parse_pattern()?;
+            self.expect(TokenKind::FatArrow)?;
+            self.skip_newlines();
+
+            let body = self.parse_block()?;
+
+            let arm_end = self.previous().span;
+            arms.push(MatchArm {
+                pattern,
+                body,
+                span: arm_start.merge(arm_end),
+            });
+        }
+
+        self.expect(TokenKind::End)?;
+
+        Ok(Stmt::Match {
+            subject,
+            arms,
+            span: span_start.merge(self.previous().span),
+        })
+    }
+
+    /// Parse a pattern in a match arm
+    fn parse_pattern(&mut self) -> Result<Pattern, ParseError> {
+        let token_kind = self.peek_kind().clone();
+        let token_span = self.peek().span;
+
+        match token_kind {
+            // Wildcard: _
+            TokenKind::Identifier(ref name) if name == "_" => {
+                self.advance();
+                Ok(Pattern::Wildcard { span: token_span })
+            }
+            // Integer literal
+            TokenKind::Int(n) => {
+                self.advance();
+                Ok(Pattern::Literal(Expr::Int {
+                    value: n,
+                    span: token_span,
+                }))
+            }
+            // Float literal
+            TokenKind::Float(n) => {
+                self.advance();
+                Ok(Pattern::Literal(Expr::Float {
+                    value: n,
+                    span: token_span,
+                }))
+            }
+            // String literal
+            TokenKind::String(s) => {
+                self.advance();
+                Ok(Pattern::Literal(Expr::String {
+                    value: s,
+                    span: token_span,
+                }))
+            }
+            // Boolean literals
+            TokenKind::True => {
+                self.advance();
+                Ok(Pattern::Literal(Expr::Bool {
+                    value: true,
+                    span: token_span,
+                }))
+            }
+            TokenKind::False => {
+                self.advance();
+                Ok(Pattern::Literal(Expr::Bool {
+                    value: false,
+                    span: token_span,
+                }))
+            }
+            // Nil literal
+            TokenKind::Nil => {
+                self.advance();
+                Ok(Pattern::Literal(Expr::Nil { span: token_span }))
+            }
+            // Negative integer literal
+            TokenKind::Minus => {
+                self.advance();
+                if let TokenKind::Int(n) = self.peek_kind().clone() {
+                    let end_span = self.peek().span;
+                    self.advance();
+                    Ok(Pattern::Literal(Expr::Int {
+                        value: -n,
+                        span: token_span.merge(end_span),
+                    }))
+                } else {
+                    Err(ParseError::ExpectedExpression {
+                        span: self.peek().span.into(),
+                    })
+                }
+            }
+            // Variable binding (any other identifier)
+            TokenKind::Identifier(name) => {
+                self.advance();
+                Ok(Pattern::Variable {
+                    name,
+                    span: token_span,
+                })
+            }
+            _ => Err(ParseError::UnexpectedToken {
+                expected: "pattern (literal, variable, or '_')".to_string(),
+                found: self.peek_kind().description().to_string(),
+                span: token_span.into(),
+            }),
+        }
     }
 
     /// Parse a let statement
@@ -700,6 +866,7 @@ impl Parser {
         if self.check(&TokenKind::End)
             || self.check(&TokenKind::Else)
             || self.check(&TokenKind::Elsif)
+            || self.check(&TokenKind::When)
             || self.check(&TokenKind::Eof)
         {
             return Ok(());
@@ -749,7 +916,7 @@ mod tests {
     fn test_empty_function() {
         let program = parse("def main\nend");
         assert_eq!(program.items.len(), 1);
-        let Item::Function(f) = &program.items[0];
+        let Item::Function(f) = &program.items[0] else { panic!("expected function") };
         assert_eq!(f.name, "main");
         assert!(f.params.is_empty());
         assert!(f.body.stmts.is_empty());
@@ -758,7 +925,7 @@ mod tests {
     #[test]
     fn test_function_with_params() {
         let program = parse("def add(a: Int, b: Int) -> Int\n  return a + b\nend");
-        let Item::Function(f) = &program.items[0];
+        let Item::Function(f) = &program.items[0] else { panic!("expected function") };
         assert_eq!(f.name, "add");
         assert_eq!(f.params.len(), 2);
         assert_eq!(f.params[0].name, "a");
@@ -768,14 +935,14 @@ mod tests {
     #[test]
     fn test_arithmetic() {
         let program = parse("def main\n  x = 1 + 2 * 3\nend");
-        let Item::Function(f) = &program.items[0];
+        let Item::Function(f) = &program.items[0] else { panic!("expected function") };
         assert_eq!(f.body.stmts.len(), 1);
     }
 
     #[test]
     fn test_function_call() {
         let program = parse("def main\n  puts(\"hello\")\nend");
-        let Item::Function(f) = &program.items[0];
+        let Item::Function(f) = &program.items[0] else { panic!("expected function") };
         if let Stmt::Expr(Expr::Call { args, .. }) = &f.body.stmts[0] {
             assert_eq!(args.len(), 1);
         } else {
@@ -791,7 +958,7 @@ mod tests {
 end"#,
         );
         assert_eq!(program.items.len(), 1);
-        let Item::Function(f) = &program.items[0];
+        let Item::Function(f) = &program.items[0] else { panic!("expected function") };
         assert_eq!(f.name, "main");
         assert_eq!(f.body.stmts.len(), 1);
     }

@@ -17,9 +17,15 @@ pub fn extract_file_info(program: &Program) -> FileInfo {
     let mut calls = HashSet::new();
 
     for item in &program.items {
-        let Item::Function(function) = item;
-        exports.insert(function.name.clone());
-        collect_calls_block(&function.body, &mut calls);
+        match item {
+            Item::Function(function) => {
+                exports.insert(function.name.clone());
+                collect_calls_block(&function.body, &mut calls);
+            }
+            Item::Struct(struct_def) => {
+                exports.insert(struct_def.name.clone());
+            }
+        }
     }
 
     FileInfo { exports, calls }
@@ -175,6 +181,17 @@ fn collect_calls_stmt(stmt: &Stmt, calls: &mut HashSet<String>) {
         } => {
             collect_calls_expr(iterable, calls);
             collect_calls_block(body, calls);
+        }
+        Stmt::Match {
+            subject, arms, ..
+        } => {
+            collect_calls_expr(subject, calls);
+            for arm in arms {
+                if let crate::parser::ast::Pattern::Literal(expr) = &arm.pattern {
+                    collect_calls_expr(expr, calls);
+                }
+                collect_calls_block(&arm.body, calls);
+            }
         }
     }
 }

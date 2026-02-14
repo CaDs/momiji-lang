@@ -1,0 +1,18 @@
+---
+source: tests/cli_check.rs
+assertion_line: 556
+expression: snapshot_view(&result)
+---
+status: 1
+--- stdout ---
+--- stderr ---
+types::undefined_field
+
+  × Undefined field 'z' on struct 'Point'
+   ╭─[struct_undefined_field.mj:8:9]
+ 7 │   p = Point.new(10, 20)
+ 8 │   puts(p.z)
+   ·         ─┬
+   ·          ╰── no such field
+ 9 │ end
+   ╰────

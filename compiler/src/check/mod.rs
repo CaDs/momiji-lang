@@ -23,7 +23,11 @@ pub fn check(path: &Path, changed: bool, timings: bool) -> miette::Result<()> {
 
     let cache_path = check_cache_path();
     let mut cache = if changed {
-        load_check_cache(&cache_path)?
+        let cache_result = load_check_cache(&cache_path)?;
+        if cache_result.version_invalidated {
+            eprintln!("Cache invalidated: compiler version changed. Starting fresh.");
+        }
+        cache_result.cache
     } else {
         HashMap::new()
     };
@@ -153,21 +157,74 @@ pub fn check(path: &Path, changed: bool, timings: bool) -> miette::Result<()> {
             .collect();
         targets_to_check.sort();
 
-        let frontend_results: Vec<(usize, FrontendArtifacts)> = targets_to_check
+        let frontend_results: Vec<(usize, miette::Result<FrontendArtifacts>)> = targets_to_check
             .par_iter()
-            .map(|&idx| frontend(&targets[idx]).map(|a| (idx, a)))
-            .collect::<miette::Result<Vec<_>>>()?;
+            .map(|&idx| (idx, frontend(&targets[idx])))
+            .collect();
 
-        for (idx, artifacts) in &frontend_results {
-            checked += 1;
-            frontend_total += artifacts.timing.total();
-            if is_single_target {
-                single_frontend_timing = Some(artifacts.timing);
+        let mut error_count = 0usize;
+        let mut first_error: Option<miette::Report> = None;
+        let mut succeeded_indices: Vec<usize> = Vec::new();
+        for (idx, result) in frontend_results {
+            match result {
+                Ok(artifacts) => {
+                    checked += 1;
+                    frontend_total += artifacts.timing.total();
+                    if is_single_target {
+                        single_frontend_timing = Some(artifacts.timing);
+                    }
+                    succeeded_indices.push(idx);
+
+                    // Compute metadata for files we check but hadn't computed yet.
+                    if current_metadata[idx].is_none() {
+                        if let Ok(meta) = compute_file_metadata(&targets[idx]) {
+                            current_metadata[idx] = Some(meta);
+                        }
+                    }
+                }
+                Err(report) => {
+                    error_count += 1;
+                    if is_single_target {
+                        first_error = Some(report);
+                    } else {
+                        eprintln!("{:?}", report);
+                    }
+                }
             }
+        }
 
-            // Compute metadata for files we check but hadn't computed yet.
-            if current_metadata[*idx].is_none() {
-                current_metadata[*idx] = Some(compute_file_metadata(&targets[*idx])?);
+        if error_count > 0 {
+            // Still update cache for successful files before returning error.
+            for &idx in &succeeded_indices {
+                let meta = current_metadata[idx].as_ref();
+                let (api_hash, exports, external_deps) = match meta {
+                    Some(m) => (m.api_hash, m.exports.clone(), m.external_deps.clone()),
+                    None => (0, Vec::new(), Vec::new()),
+                };
+                cache.insert(
+                    target_keys[idx].clone(),
+                    CacheEntry {
+                        fingerprint: target_fingerprints[idx].clone(),
+                        api_hash,
+                        exports,
+                        external_deps,
+                    },
+                );
+            }
+            for key in &deleted_keys {
+                cache.remove(key);
+            }
+            let _ = save_check_cache(&cache_path, &cache);
+
+            if is_single_target {
+                return Err(first_error.unwrap());
+            } else {
+                return Err(miette::miette!(
+                    "Found errors in {} of {} file(s) under {}.",
+                    error_count,
+                    targets.len(),
+                    path.display()
+                ));
             }
         }
 
@@ -217,16 +274,43 @@ pub fn check(path: &Path, changed: bool, timings: bool) -> miette::Result<()> {
 
         save_check_cache(&cache_path, &cache)?;
     } else {
-        let results: Vec<FrontendArtifacts> = targets
+        let results: Vec<miette::Result<FrontendArtifacts>> = targets
             .par_iter()
             .map(|target| frontend(target))
-            .collect::<miette::Result<Vec<_>>>()?;
+            .collect();
 
-        for artifacts in &results {
-            checked += 1;
-            frontend_total += artifacts.timing.total();
+        let mut error_count = 0usize;
+        let mut first_error: Option<miette::Report> = None;
+        for result in results {
+            match result {
+                Ok(artifacts) => {
+                    checked += 1;
+                    frontend_total += artifacts.timing.total();
+                    if is_single_target {
+                        single_frontend_timing = Some(artifacts.timing);
+                    }
+                }
+                Err(report) => {
+                    error_count += 1;
+                    if is_single_target {
+                        first_error = Some(report);
+                    } else {
+                        eprintln!("{:?}", report);
+                    }
+                }
+            }
+        }
+
+        if error_count > 0 {
             if is_single_target {
-                single_frontend_timing = Some(artifacts.timing);
+                return Err(first_error.unwrap());
+            } else {
+                return Err(miette::miette!(
+                    "Found errors in {} of {} file(s) under {}.",
+                    error_count,
+                    targets.len(),
+                    path.display()
+                ));
             }
         }
 

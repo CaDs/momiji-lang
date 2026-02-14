@@ -1,0 +1,7 @@
+def main
+  x = 10
+  match x
+  when "hello" =>
+    puts(1)
+  end
+end

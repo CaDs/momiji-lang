@@ -62,6 +62,7 @@ impl TypeChecker {
                     let sig = self.function_signature(f);
                     self.functions.insert(f.name.clone(), sig);
                 }
+                Item::Struct(_) => {}
             }
         }
 
@@ -71,6 +72,7 @@ impl TypeChecker {
                 Item::Function(f) => {
                     self.check_function(f);
                 }
+                Item::Struct(_) => {}
             }
         }
 
@@ -270,6 +272,18 @@ impl TypeChecker {
                 self.define(var, elem_type);
                 self.check_block(body);
                 self.pop_scope();
+            }
+            Stmt::Match {
+                subject,
+                arms,
+                ..
+            } => {
+                self.check_expr(subject);
+                for arm in arms {
+                    self.push_scope();
+                    self.check_block(&arm.body);
+                    self.pop_scope();
+                }
             }
         }
     }

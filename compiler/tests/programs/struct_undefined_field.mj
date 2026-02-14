@@ -1,0 +1,9 @@
+struct Point
+  property x : Int
+  property y : Int
+end
+
+def main
+  p = Point.new(10, 20)
+  puts(p.z)
+end

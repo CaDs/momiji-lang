@@ -4,13 +4,17 @@ use crate::errors::TypeError;
 use crate::parser::ast::{
     BinaryOp, Block, Expr, Function, Item, Program, Stmt, TypeAnnotation, TypeKind, UnaryOp,
 };
-use crate::sem::ir::{SemBlock, SemExpr, SemExprKind, SemFunction, SemParam, SemProgram, SemStmt};
-use crate::types::types::{FunctionSignature, Symbol, Type};
+use crate::sem::ir::{
+    SemBlock, SemExpr, SemExprKind, SemField, SemFunction, SemMatchArm, SemParam, SemPattern,
+    SemProgram, SemStmt, SemStruct,
+};
+use crate::types::types::{FunctionSignature, StructSignature, Symbol, Type};
 
 /// Lowers AST into typed semantic IR and validates semantic rules.
 pub struct SemLowerer {
     functions: HashMap<String, FunctionSignature>,
     builtins: HashMap<String, FunctionSignature>,
+    structs: HashMap<String, StructSignature>,
     scopes: Vec<HashMap<String, Symbol>>,
     current_return_type: Option<Type>,
     errors: Vec<TypeError>,
@@ -21,6 +25,7 @@ impl SemLowerer {
         let mut lowerer = Self {
             functions: HashMap::new(),
             builtins: HashMap::new(),
+            structs: HashMap::new(),
             scopes: vec![HashMap::new()],
             current_return_type: None,
             errors: Vec::new(),
@@ -30,20 +35,53 @@ impl SemLowerer {
     }
 
     pub fn lower(mut self, program: &Program) -> Result<SemProgram, Vec<TypeError>> {
+        // Pass 1: Register struct signatures (so they're available as types)
+        let mut sem_structs = Vec::new();
         for item in &program.items {
-            let Item::Function(function) = item;
-            let signature = self.function_signature(function);
-            self.functions.insert(function.name.clone(), signature);
+            if let Item::Struct(struct_def) = item {
+                let mut fields = Vec::new();
+                for field in &struct_def.fields {
+                    let ty = self.resolve_type(&field.ty.kind);
+                    fields.push((field.name.clone(), ty));
+                }
+                self.structs.insert(
+                    struct_def.name.clone(),
+                    StructSignature {
+                        fields: fields.clone(),
+                    },
+                );
+                sem_structs.push(SemStruct {
+                    name: struct_def.name.clone(),
+                    fields: fields
+                        .into_iter()
+                        .map(|(name, ty)| SemField { name, ty })
+                        .collect(),
+                    span: struct_def.span,
+                });
+            }
         }
 
-        let mut functions = Vec::with_capacity(program.items.len());
+        // Pass 2: Register function signatures (can now reference struct types)
         for item in &program.items {
-            let Item::Function(function) = item;
-            functions.push(self.lower_function(function));
+            if let Item::Function(function) = item {
+                let signature = self.function_signature(function);
+                self.functions.insert(function.name.clone(), signature);
+            }
+        }
+
+        // Pass 3: Lower function bodies
+        let mut functions = Vec::new();
+        for item in &program.items {
+            if let Item::Function(function) = item {
+                functions.push(self.lower_function(function));
+            }
         }
 
         if self.errors.is_empty() {
-            Ok(SemProgram { functions })
+            Ok(SemProgram {
+                structs: sem_structs,
+                functions,
+            })
         } else {
             Err(std::mem::take(&mut self.errors))
         }
@@ -92,7 +130,13 @@ impl SemLowerer {
                 "String" => Type::String,
                 "Nil" => Type::Nil,
                 "Unit" => Type::Unit,
-                _ => Type::Unknown,
+                _ => {
+                    if self.structs.contains_key(name) {
+                        Type::Struct(name.clone())
+                    } else {
+                        Type::Unknown
+                    }
+                }
             },
             TypeKind::Nullable(inner) => Type::Nullable(Box::new(self.resolve_type(inner))),
             TypeKind::Array(inner) => Type::Array(Box::new(self.resolve_type(inner))),
@@ -267,6 +311,30 @@ impl SemLowerer {
                     span: *span,
                 }
             }
+            Stmt::Match {
+                subject,
+                arms,
+                span,
+            } => {
+                let subject = self.lower_expr(subject);
+                let subject_ty = subject.ty.clone();
+
+                let mut sem_arms = Vec::with_capacity(arms.len());
+                for arm in arms {
+                    let (pattern, body) = self.lower_match_arm(arm, &subject_ty);
+                    sem_arms.push(SemMatchArm {
+                        pattern,
+                        body,
+                        span: arm.span,
+                    });
+                }
+
+                SemStmt::Match {
+                    subject,
+                    arms: sem_arms,
+                    span: *span,
+                }
+            }
         }
     }
 
@@ -285,6 +353,7 @@ impl SemLowerer {
             Stmt::If { span, .. } => *span,
             Stmt::While { span, .. } => *span,
             Stmt::For { span, .. } => *span,
+            Stmt::Match { span, .. } => *span,
         }
     }
 
@@ -311,6 +380,15 @@ impl SemLowerer {
                 } else {
                     false
                 }
+            }
+            SemStmt::Match { arms, .. } => {
+                let has_catchall = arms.iter().any(|arm| {
+                    matches!(
+                        arm.pattern,
+                        SemPattern::Wildcard | SemPattern::Variable { .. }
+                    )
+                });
+                has_catchall && arms.iter().all(|arm| self.block_definitely_returns(&arm.body))
             }
             SemStmt::Let { .. }
             | SemStmt::Assign { .. }
@@ -451,6 +529,22 @@ impl SemLowerer {
                 }
             }
             Expr::Call { callee, args, span } => {
+                // Detect StructName.new(...) constructor pattern
+                if let Expr::Field {
+                    object,
+                    field,
+                    ..
+                } = callee.as_ref()
+                {
+                    if field == "new" {
+                        if let Expr::Identifier { name, .. } = object.as_ref() {
+                            if self.structs.contains_key(name) {
+                                return self.lower_struct_construct(name, args, *span);
+                            }
+                        }
+                    }
+                }
+
                 let name = match callee.as_ref() {
                     Expr::Identifier { name, .. } => name.clone(),
                     _ => {
@@ -519,16 +613,63 @@ impl SemLowerer {
                 span,
             } => {
                 let object = self.lower_expr(object);
-                self.error(TypeError::InvalidOperator {
-                    op: ".".to_string(),
-                    lhs: object.ty.to_string(),
-                    rhs: field.clone(),
-                    span: (*span).into(),
-                });
-                SemExpr {
-                    kind: SemExprKind::Variable("<invalid-field>".to_string()),
-                    ty: Type::Error,
-                    span: *span,
+                match &object.ty {
+                    Type::Struct(struct_name) => {
+                        if let Some(sig) = self.structs.get(struct_name) {
+                            if let Some((_fname, fty)) =
+                                sig.fields.iter().find(|(name, _)| name == field)
+                            {
+                                let ty = fty.clone();
+                                SemExpr {
+                                    kind: SemExprKind::FieldAccess {
+                                        object: Box::new(object),
+                                        field: field.clone(),
+                                    },
+                                    ty,
+                                    span: *span,
+                                }
+                            } else {
+                                self.error(TypeError::UndefinedField {
+                                    struct_name: struct_name.clone(),
+                                    field: field.clone(),
+                                    span: (*span).into(),
+                                });
+                                SemExpr {
+                                    kind: SemExprKind::Variable("<invalid-field>".to_string()),
+                                    ty: Type::Error,
+                                    span: *span,
+                                }
+                            }
+                        } else {
+                            self.error(TypeError::UndefinedStruct {
+                                name: struct_name.clone(),
+                                span: (*span).into(),
+                            });
+                            SemExpr {
+                                kind: SemExprKind::Variable("<invalid-field>".to_string()),
+                                ty: Type::Error,
+                                span: *span,
+                            }
+                        }
+                    }
+                    Type::Error => SemExpr {
+                        kind: SemExprKind::Variable("<invalid-field>".to_string()),
+                        ty: Type::Error,
+                        span: *span,
+                    },
+                    _ => {
+                        self.error(TypeError::InvalidOperator {
+                            op: ".".to_string(),
+                            lhs: object.ty.to_string(),
+                            rhs: field.clone(),
+                            span: (*span).into(),
+                        });
+                        SemExpr {
+                            kind: SemExprKind::Variable("<invalid-field>".to_string()),
+                            ty: Type::Error,
+                            span: *span,
+                        }
+                    }
                 }
             }
             Expr::Index {
@@ -601,6 +742,94 @@ impl SemLowerer {
             }
             Expr::Grouped { expr, .. } => self.lower_expr(expr),
         }
+    }
+
+    fn lower_struct_construct(
+        &mut self,
+        struct_name: &str,
+        args: &[Expr],
+        span: crate::errors::Span,
+    ) -> SemExpr {
+        let sig = self.structs.get(struct_name).cloned().unwrap();
+
+        if args.len() != sig.fields.len() {
+            self.error(TypeError::WrongArity {
+                name: format!("{}.new", struct_name),
+                expected: sig.fields.len(),
+                found: args.len(),
+                span: span.into(),
+            });
+            return SemExpr {
+                kind: SemExprKind::StructConstruct {
+                    name: struct_name.to_string(),
+                    args: Vec::new(),
+                },
+                ty: Type::Error,
+                span,
+            };
+        }
+
+        let mut lowered_args = Vec::with_capacity(args.len());
+        for (arg, (_field_name, field_type)) in args.iter().zip(sig.fields.iter()) {
+            let lowered = self.lower_expr(arg);
+            if !lowered.ty.is_assignable_to(field_type) {
+                self.error(TypeError::TypeMismatch {
+                    expected: field_type.to_string(),
+                    found: lowered.ty.to_string(),
+                    span: lowered.span.into(),
+                });
+            }
+            lowered_args.push(lowered);
+        }
+
+        SemExpr {
+            kind: SemExprKind::StructConstruct {
+                name: struct_name.to_string(),
+                args: lowered_args,
+            },
+            ty: Type::Struct(struct_name.to_string()),
+            span,
+        }
+    }
+
+    fn lower_match_arm(
+        &mut self,
+        arm: &crate::parser::ast::MatchArm,
+        subject_ty: &Type,
+    ) -> (SemPattern, SemBlock) {
+        use crate::parser::ast::Pattern;
+
+        self.push_scope();
+
+        let pattern = match &arm.pattern {
+            Pattern::Wildcard { .. } => SemPattern::Wildcard,
+            Pattern::Literal(expr) => {
+                let lowered = self.lower_expr(expr);
+                if !lowered.ty.is_assignable_to(subject_ty)
+                    && lowered.ty != Type::Error
+                    && *subject_ty != Type::Error
+                {
+                    self.error(TypeError::TypeMismatch {
+                        expected: subject_ty.to_string(),
+                        found: lowered.ty.to_string(),
+                        span: lowered.span.into(),
+                    });
+                }
+                SemPattern::Literal(lowered)
+            }
+            Pattern::Variable { name, .. } => {
+                self.define(name, subject_ty.clone());
+                SemPattern::Variable {
+                    name: name.clone(),
+                    ty: subject_ty.clone(),
+                }
+            }
+        };
+
+        let body = self.lower_block(&arm.body);
+        self.pop_scope();
+
+        (pattern, body)
     }
 
     fn binary_type(

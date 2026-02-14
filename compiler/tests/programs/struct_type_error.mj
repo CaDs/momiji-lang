@@ -1,0 +1,8 @@
+struct Point
+  property x : Int
+  property y : Int
+end
+
+def main
+  p = Point.new("hello", 20)
+end

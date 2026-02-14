@@ -19,10 +19,18 @@ pub enum Type {
     Array(Box<Type>),
     /// Nullable type
     Nullable(Box<Type>),
+    /// Struct type (identified by name)
+    Struct(String),
     /// Unknown type (for type inference)
     Unknown,
     /// Error type (for error recovery)
     Error,
+}
+
+/// Struct signature for type checking
+#[derive(Debug, Clone)]
+pub struct StructSignature {
+    pub fields: Vec<(String, Type)>,
 }
 
 impl Type {
@@ -39,6 +47,8 @@ impl Type {
             (t, Type::Nullable(inner)) if t == inner.as_ref() => true,
             // Int can be assigned to Float
             (Type::Int, Type::Float) => true,
+            // Same-name struct match
+            (Type::Struct(a), Type::Struct(b)) if a == b => true,
             // Error type can be assigned to anything (for error recovery)
             (Type::Error, _) | (_, Type::Error) => true,
             _ => false,
@@ -96,6 +106,7 @@ impl fmt::Display for Type {
             Type::Unit => write!(f, "Unit"),
             Type::Array(elem) => write!(f, "[{}]", elem),
             Type::Nullable(inner) => write!(f, "{}?", inner),
+            Type::Struct(name) => write!(f, "{}", name),
             Type::Unknown => write!(f, "?"),
             Type::Error => write!(f, "<error>"),
         }

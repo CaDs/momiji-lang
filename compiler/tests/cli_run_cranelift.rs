@@ -93,6 +93,47 @@ fn run_cranelift_string_index_unsupported() {
 }
 
 #[test]
+fn run_cranelift_struct_basic() {
+    let result = run_cranelift_fixture("struct_basic.mj");
+    assert_eq!(result.status, 0);
+    assert_eq!(
+        normalized_program_output(&result, "cranelift"),
+        "10\n20\n"
+    );
+}
+
+#[test]
+fn run_cranelift_struct_in_function() {
+    let result = run_cranelift_fixture("struct_in_function.mj");
+    assert_eq!(result.status, 0);
+    assert_eq!(normalized_program_output(&result, "cranelift"), "10\n");
+}
+
+#[test]
+fn run_cranelift_match_literal() {
+    let result = run_cranelift_fixture("match_literal.mj");
+    assert_eq!(result.status, 0);
+    assert_eq!(normalized_program_output(&result, "cranelift"), "20\n");
+}
+
+#[test]
+fn run_cranelift_match_variable() {
+    let result = run_cranelift_fixture("match_variable.mj");
+    assert_eq!(result.status, 0);
+    assert_eq!(normalized_program_output(&result, "cranelift"), "42\n");
+}
+
+#[test]
+fn run_cranelift_match_in_function() {
+    let result = run_cranelift_fixture("match_in_function.mj");
+    assert_eq!(result.status, 0);
+    assert_eq!(
+        normalized_program_output(&result, "cranelift"),
+        "0\n1\n2\n"
+    );
+}
+
+#[test]
 fn run_cranelift_float_array_unsupported() {
     let result = run_cranelift_fixture("float_array_codegen_fail.mj");
     assert_ne!(result.status, 0);

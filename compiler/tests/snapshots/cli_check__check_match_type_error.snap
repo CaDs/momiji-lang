@@ -1,0 +1,18 @@
+---
+source: tests/cli_check.rs
+assertion_line: 584
+expression: snapshot_view(&result)
+---
+status: 1
+--- stdout ---
+--- stderr ---
+types::mismatch
+
+  × Type mismatch: expected Int, found String
+   ╭─[match_type_error.mj:4:8]
+ 3 │   match x
+ 4 │   when "hello" =>
+   ·        ───┬───
+   ·           ╰── expected Int here
+ 5 │     puts(1)
+   ╰────

@@ -1,0 +1,11 @@
+def main
+  s = "hello"
+  match s
+  when "world" =>
+    puts(1)
+  when "hello" =>
+    puts(2)
+  when _ =>
+    puts(3)
+  end
+end

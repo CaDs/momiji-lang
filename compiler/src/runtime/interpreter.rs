@@ -3,7 +3,9 @@ use std::fmt;
 
 use crate::errors::RuntimeError;
 use crate::parser::ast::{BinaryOp, UnaryOp};
-use crate::sem::ir::{SemBlock, SemExpr, SemExprKind, SemFunction, SemProgram, SemStmt};
+use crate::sem::ir::{
+    SemBlock, SemExpr, SemExprKind, SemFunction, SemPattern, SemProgram, SemStmt,
+};
 use crate::types::Type;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -14,6 +16,10 @@ enum Value {
     String(String),
     Nil,
     Array(Vec<Value>),
+    Struct {
+        name: String,
+        fields: HashMap<String, Value>,
+    },
     Unit,
 }
 
@@ -34,6 +40,18 @@ impl fmt::Display for Value {
                     write!(f, "{}", value)?;
                 }
                 write!(f, "]")
+            }
+            Value::Struct { name, fields } => {
+                write!(f, "{}(", name)?;
+                let mut sorted_fields: Vec<_> = fields.iter().collect();
+                sorted_fields.sort_by_key(|(k, _)| (*k).clone());
+                for (i, (k, v)) in sorted_fields.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}: {}", k, v)?;
+                }
+                write!(f, ")")
             }
             Value::Unit => write!(f, "()"),
         }
@@ -291,6 +309,41 @@ impl Interpreter {
 
                 Ok(ControlFlow::Continue)
             }
+            SemStmt::Match {
+                subject,
+                arms,
+                span: _,
+            } => {
+                let subject_val = self.eval_expr(program, scopes, subject)?;
+
+                for arm in arms {
+                    let matched = match &arm.pattern {
+                        SemPattern::Wildcard => true,
+                        SemPattern::Literal(lit_expr) => {
+                            let lit_val = self.eval_expr(program, scopes, lit_expr)?;
+                            self.values_equal(&subject_val, &lit_val)
+                        }
+                        SemPattern::Variable { .. } => true,
+                    };
+
+                    if matched {
+                        scopes.push(HashMap::new());
+                        if let SemPattern::Variable { name, ty } = &arm.pattern {
+                            self.define_variable(
+                                scopes,
+                                name,
+                                ty.clone(),
+                                subject_val.clone(),
+                            );
+                        }
+                        let flow = self.exec_block(program, scopes, &arm.body);
+                        scopes.pop();
+                        return flow;
+                    }
+                }
+
+                Ok(ControlFlow::Continue)
+            }
         }
     }
 
@@ -395,6 +448,51 @@ impl Interpreter {
                     values.push(self.eval_expr(program, scopes, element)?);
                 }
                 Ok(Value::Array(values))
+            }
+            SemExprKind::FieldAccess { object, field } => {
+                let object_value = self.eval_expr(program, scopes, object)?;
+                match object_value {
+                    Value::Struct { fields, name } => {
+                        fields
+                            .get(field)
+                            .cloned()
+                            .ok_or(RuntimeError::TypeError {
+                                message: format!(
+                                    "struct `{}` has no field `{}`",
+                                    name, field
+                                ),
+                                span: expr.span.into(),
+                            })
+                    }
+                    other => Err(RuntimeError::TypeError {
+                        message: format!(
+                            "cannot access field on value of type {}",
+                            Self::value_type_name(&other)
+                        ),
+                        span: expr.span.into(),
+                    }),
+                }
+            }
+            SemExprKind::StructConstruct { name, args } => {
+                let struct_def = program
+                    .structs
+                    .iter()
+                    .find(|s| s.name == *name)
+                    .ok_or(RuntimeError::TypeError {
+                        message: format!("undefined struct `{}`", name),
+                        span: expr.span.into(),
+                    })?;
+
+                let mut fields = HashMap::new();
+                for (arg_expr, field_def) in args.iter().zip(struct_def.fields.iter()) {
+                    let value = self.eval_expr(program, scopes, arg_expr)?;
+                    fields.insert(field_def.name.clone(), value);
+                }
+
+                Ok(Value::Struct {
+                    name: name.clone(),
+                    fields,
+                })
             }
         }
     }
@@ -685,6 +783,7 @@ impl Interpreter {
             Value::String(_) => "String",
             Value::Nil => "Nil",
             Value::Array(_) => "Array",
+            Value::Struct { .. } => "Struct",
             Value::Unit => "Unit",
         }
     }
@@ -727,6 +826,10 @@ impl Interpreter {
                 Value::Array(values) => values
                     .iter()
                     .all(|element| Self::value_matches_type(element, inner)),
+                _ => false,
+            },
+            Type::Struct(expected_name) => match value {
+                Value::Struct { name, .. } => name == expected_name,
                 _ => false,
             },
         }

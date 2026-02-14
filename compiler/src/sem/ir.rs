@@ -4,7 +4,21 @@ use crate::types::Type;
 
 #[derive(Debug, Clone)]
 pub struct SemProgram {
+    pub structs: Vec<SemStruct>,
     pub functions: Vec<SemFunction>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SemStruct {
+    pub name: String,
+    pub fields: Vec<SemField>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct SemField {
+    pub name: String,
+    pub ty: Type,
 }
 
 #[derive(Debug, Clone)]
@@ -63,6 +77,25 @@ pub enum SemStmt {
         body: SemBlock,
         span: Span,
     },
+    Match {
+        subject: SemExpr,
+        arms: Vec<SemMatchArm>,
+        span: Span,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct SemMatchArm {
+    pub pattern: SemPattern,
+    pub body: SemBlock,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub enum SemPattern {
+    Wildcard,
+    Literal(SemExpr),
+    Variable { name: String, ty: Type },
 }
 
 #[derive(Debug, Clone)]
@@ -98,4 +131,12 @@ pub enum SemExprKind {
         index: Box<SemExpr>,
     },
     Array(Vec<SemExpr>),
+    FieldAccess {
+        object: Box<SemExpr>,
+        field: String,
+    },
+    StructConstruct {
+        name: String,
+        args: Vec<SemExpr>,
+    },
 }

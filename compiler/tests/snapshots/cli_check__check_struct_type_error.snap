@@ -1,0 +1,18 @@
+---
+source: tests/cli_check.rs
+assertion_line: 549
+expression: snapshot_view(&result)
+---
+status: 1
+--- stdout ---
+--- stderr ---
+types::mismatch
+
+  × Type mismatch: expected Int, found String
+   ╭─[struct_type_error.mj:7:17]
+ 6 │ def main
+ 7 │   p = Point.new("hello", 20)
+   ·                 ───┬───
+   ·                    ╰── expected Int here
+ 8 │ end
+   ╰────

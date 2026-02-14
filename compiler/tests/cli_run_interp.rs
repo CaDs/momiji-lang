@@ -78,3 +78,48 @@ fn run_interp_for_loop() {
     assert_eq!(result.status, 0);
     assert_eq!(normalized_program_output(&result, "interp"), "1\n2\n3\n");
 }
+
+#[test]
+fn run_interp_struct_basic() {
+    let result = run_interp_fixture("struct_basic.mj");
+    assert_eq!(result.status, 0);
+    assert_eq!(normalized_program_output(&result, "interp"), "10\n20\n");
+}
+
+#[test]
+fn run_interp_struct_in_function() {
+    let result = run_interp_fixture("struct_in_function.mj");
+    assert_eq!(result.status, 0);
+    assert_eq!(normalized_program_output(&result, "interp"), "10\n");
+}
+
+#[test]
+fn run_interp_match_literal() {
+    let result = run_interp_fixture("match_literal.mj");
+    assert_eq!(result.status, 0);
+    assert_eq!(normalized_program_output(&result, "interp"), "20\n");
+}
+
+#[test]
+fn run_interp_match_variable() {
+    let result = run_interp_fixture("match_variable.mj");
+    assert_eq!(result.status, 0);
+    assert_eq!(normalized_program_output(&result, "interp"), "42\n");
+}
+
+#[test]
+fn run_interp_match_string() {
+    let result = run_interp_fixture("match_string.mj");
+    assert_eq!(result.status, 0);
+    assert_eq!(normalized_program_output(&result, "interp"), "2\n");
+}
+
+#[test]
+fn run_interp_match_in_function() {
+    let result = run_interp_fixture("match_in_function.mj");
+    assert_eq!(result.status, 0);
+    assert_eq!(
+        normalized_program_output(&result, "interp"),
+        "0\n1\n2\n"
+    );
+}

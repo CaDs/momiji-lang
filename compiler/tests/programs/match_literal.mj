@@ -1,0 +1,11 @@
+def main
+  x = 2
+  match x
+  when 1 =>
+    puts(10)
+  when 2 =>
+    puts(20)
+  when 3 =>
+    puts(30)
+  end
+end

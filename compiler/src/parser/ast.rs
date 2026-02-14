@@ -10,6 +10,23 @@ pub struct Program {
 #[derive(Debug, Clone)]
 pub enum Item {
     Function(Function),
+    Struct(StructDef),
+}
+
+/// A struct definition
+#[derive(Debug, Clone)]
+pub struct StructDef {
+    pub name: String,
+    pub fields: Vec<FieldDef>,
+    pub span: Span,
+}
+
+/// A struct field definition
+#[derive(Debug, Clone)]
+pub struct FieldDef {
+    pub name: String,
+    pub ty: TypeAnnotation,
+    pub span: Span,
 }
 
 /// A function definition
@@ -89,6 +106,31 @@ pub enum Stmt {
         body: Block,
         span: Span,
     },
+    /// Match statement
+    Match {
+        subject: Expr,
+        arms: Vec<MatchArm>,
+        span: Span,
+    },
+}
+
+/// A match arm
+#[derive(Debug, Clone)]
+pub struct MatchArm {
+    pub pattern: Pattern,
+    pub body: Block,
+    pub span: Span,
+}
+
+/// A pattern in a match arm
+#[derive(Debug, Clone)]
+pub enum Pattern {
+    /// Wildcard pattern: `_`
+    Wildcard { span: Span },
+    /// Literal pattern: `0`, `"hello"`, `true`
+    Literal(Expr),
+    /// Variable binding pattern: `n`
+    Variable { name: String, span: Span },
 }
 
 /// Expressions

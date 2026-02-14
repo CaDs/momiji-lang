@@ -7,7 +7,7 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 
 use crate::errors::CodegenError;
 use crate::parser::ast::{BinaryOp, UnaryOp};
-use crate::sem::ir::{SemBlock, SemExpr, SemExprKind, SemProgram, SemStmt};
+use crate::sem::ir::{SemBlock, SemExpr, SemExprKind, SemPattern, SemProgram, SemStmt};
 use crate::types::Type;
 
 #[derive(Debug, Clone)]
@@ -40,6 +40,7 @@ struct FunctionCompiler<'a> {
     string_counter: usize,
     function_ids: &'a HashMap<String, FuncId>,
     function_sigs: &'a HashMap<String, FunctionSig>,
+    struct_defs: &'a HashMap<String, Vec<String>>,
     return_type: Option<types::Type>,
 }
 
@@ -94,6 +95,7 @@ impl<'a> FunctionCompiler<'a> {
             Type::Unit => None,
             Type::Array(_) => Some(types::I64),
             Type::Nullable(_) => Some(types::I64),
+            Type::Struct(_) => Some(types::I64), // heap-allocated pointer
             Type::Unknown | Type::Error => None,
         }
     }
@@ -182,6 +184,11 @@ impl<'a> FunctionCompiler<'a> {
             SemStmt::For { .. } => {
                 self.error("`for` loops are not yet supported by the Cranelift backend")
             }
+            SemStmt::Match {
+                subject,
+                arms,
+                ..
+            } => self.compile_match(subject, arms),
         }
     }
 
@@ -259,6 +266,101 @@ impl<'a> FunctionCompiler<'a> {
         Ok(false)
     }
 
+    fn compile_match(
+        &mut self,
+        subject: &SemExpr,
+        arms: &[crate::sem::ir::SemMatchArm],
+    ) -> Result<bool, CodegenError> {
+        let subject_val = self.compile_expr(subject)?;
+        let merge_bb = self.builder.create_block();
+
+        let mut all_terminated = true;
+
+        for (i, arm) in arms.iter().enumerate() {
+            let is_last = i == arms.len() - 1;
+
+            match &arm.pattern {
+                SemPattern::Wildcard => {
+                    // Unconditional: compile body directly
+                    self.push_scope();
+                    let terminated = self.compile_block(&arm.body)?;
+                    self.pop_scope();
+                    if !terminated {
+                        self.builder.ins().jump(merge_bb, &[]);
+                        all_terminated = false;
+                    }
+                    // No further arms reachable
+                    break;
+                }
+                SemPattern::Variable { name, .. } => {
+                    // Unconditional: bind variable, compile body
+                    self.push_scope();
+                    let ty = self.builder.func.dfg.value_type(subject_val);
+                    self.define_local(name, ty, subject_val);
+                    let terminated = self.compile_block(&arm.body)?;
+                    self.pop_scope();
+                    if !terminated {
+                        self.builder.ins().jump(merge_bb, &[]);
+                        all_terminated = false;
+                    }
+                    break;
+                }
+                SemPattern::Literal(lit_expr) => {
+                    let lit_val = self.compile_expr(lit_expr)?;
+
+                    // Compare subject with literal
+                    let subject_ty = self.builder.func.dfg.value_type(subject_val);
+                    let cmp = if subject_ty == types::F64 {
+                        let s = self.cast_value(subject_val, types::F64)?;
+                        let l = self.cast_value(lit_val, types::F64)?;
+                        self.builder.ins().fcmp(FloatCC::Equal, s, l)
+                    } else {
+                        let width = if subject_ty == types::I8 {
+                            types::I8
+                        } else {
+                            types::I64
+                        };
+                        let s = self.cast_value(subject_val, width)?;
+                        let l = self.cast_value(lit_val, width)?;
+                        self.builder.ins().icmp(IntCC::Equal, s, l)
+                    };
+
+                    let arm_bb = self.builder.create_block();
+                    let next_bb = if is_last {
+                        merge_bb
+                    } else {
+                        self.builder.create_block()
+                    };
+
+                    self.builder.ins().brif(cmp, arm_bb, &[], next_bb, &[]);
+
+                    self.builder.switch_to_block(arm_bb);
+                    self.builder.seal_block(arm_bb);
+                    self.push_scope();
+                    let terminated = self.compile_block(&arm.body)?;
+                    self.pop_scope();
+                    if !terminated {
+                        self.builder.ins().jump(merge_bb, &[]);
+                        all_terminated = false;
+                    }
+
+                    if !is_last {
+                        self.builder.switch_to_block(next_bb);
+                        self.builder.seal_block(next_bb);
+                    } else {
+                        // last arm is a literal — no guaranteed match, so not all terminated
+                        all_terminated = false;
+                    }
+                }
+            }
+        }
+
+        self.builder.switch_to_block(merge_bb);
+        self.builder.seal_block(merge_bb);
+
+        Ok(all_terminated && !arms.is_empty())
+    }
+
     fn compile_expr(&mut self, expr: &SemExpr) -> Result<Value, CodegenError> {
         match &expr.kind {
             SemExprKind::Int(value) => Ok(self.builder.ins().iconst(types::I64, *value)),
@@ -284,6 +386,12 @@ impl<'a> FunctionCompiler<'a> {
             SemExprKind::Call { name, args } => self.compile_call(name, args, &expr.ty),
             SemExprKind::Index { object, index } => self.compile_index_expr(object, index, expr),
             SemExprKind::Array(elements) => self.compile_array_literal(elements, &expr.ty),
+            SemExprKind::FieldAccess { object, field } => {
+                self.compile_field_access(object, field, expr)
+            }
+            SemExprKind::StructConstruct { name, args } => {
+                self.compile_struct_construct(name, args)
+            }
         }
     }
 
@@ -369,6 +477,97 @@ impl<'a> FunctionCompiler<'a> {
         }
 
         Ok(array_ptr)
+    }
+
+    fn compile_struct_construct(
+        &mut self,
+        name: &str,
+        args: &[SemExpr],
+    ) -> Result<Value, CodegenError> {
+        let field_names = self
+            .struct_defs
+            .get(name)
+            .ok_or_else(|| CodegenError::LlvmError {
+                message: format!("unknown struct `{}` in codegen", name),
+            })?
+            .clone();
+
+        let num_fields = field_names.len();
+        let bytes = (num_fields as i64) * 8;
+
+        let malloc_ref = self
+            .module
+            .declare_func_in_func(self.malloc_id, self.builder.func);
+        let size_val = self.builder.ins().iconst(types::I64, bytes);
+        let struct_ptr = self.builder.ins().call(malloc_ref, &[size_val]);
+        let struct_ptr = self.builder.inst_results(struct_ptr)[0];
+
+        let flags = MemFlags::new();
+        for (idx, arg) in args.iter().enumerate() {
+            let arg_val = self.compile_expr(arg)?;
+            let arg_val = self.cast_value(arg_val, types::I64)?;
+            let offset = i32::try_from(idx * 8).map_err(|_| CodegenError::LlvmError {
+                message: "struct field offset overflow".to_string(),
+            })?;
+            self.builder
+                .ins()
+                .store(flags, arg_val, struct_ptr, offset);
+        }
+
+        Ok(struct_ptr)
+    }
+
+    fn compile_field_access(
+        &mut self,
+        object: &SemExpr,
+        field: &str,
+        full_expr: &SemExpr,
+    ) -> Result<Value, CodegenError> {
+        let struct_name = match &object.ty {
+            Type::Struct(name) => name.clone(),
+            other => {
+                return self.error(format!(
+                    "field access on non-struct type `{}` in Cranelift backend",
+                    other
+                ));
+            }
+        };
+
+        let field_names = self
+            .struct_defs
+            .get(&struct_name)
+            .ok_or_else(|| CodegenError::LlvmError {
+                message: format!("unknown struct `{}` in codegen", struct_name),
+            })?;
+
+        let field_idx = field_names
+            .iter()
+            .position(|f| f == field)
+            .ok_or_else(|| CodegenError::LlvmError {
+                message: format!("unknown field `{}` on struct `{}`", field, struct_name),
+            })?;
+
+        let struct_ptr = self.compile_expr(object)?;
+        let struct_ptr = self.cast_value(struct_ptr, types::I64)?;
+
+        let offset = i32::try_from(field_idx * 8).map_err(|_| CodegenError::LlvmError {
+            message: "struct field offset overflow".to_string(),
+        })?;
+
+        let flags = MemFlags::new();
+        let raw_value = self
+            .builder
+            .ins()
+            .load(types::I64, flags, struct_ptr, offset);
+
+        let target_ty =
+            Self::sem_type_to_cranelift(&full_expr.ty).ok_or_else(|| CodegenError::LlvmError {
+                message: format!(
+                    "unsupported field access result type `{}` in Cranelift backend",
+                    full_expr.ty
+                ),
+            })?;
+        self.cast_value(raw_value, target_ty)
     }
 
     fn compile_index_expr(
@@ -797,6 +996,7 @@ impl Codegen {
             Type::Unit => None,
             Type::Array(_) => Some(types::I64),
             Type::Nullable(_) => Some(types::I64),
+            Type::Struct(_) => Some(types::I64),
             Type::Unknown | Type::Error => None,
         }
     }
@@ -906,6 +1106,15 @@ impl Codegen {
             });
         }
 
+        // Build struct field layouts for codegen.
+        let mut struct_defs: HashMap<String, Vec<String>> = HashMap::new();
+        for s in &program.structs {
+            struct_defs.insert(
+                s.name.clone(),
+                s.fields.iter().map(|f| f.name.clone()).collect(),
+            );
+        }
+
         // Declare all user functions first so calls can reference each other.
         let mut function_ids = HashMap::new();
         for function in &program.functions {
@@ -978,6 +1187,7 @@ impl Codegen {
                     string_counter: 0,
                     function_ids: &function_ids,
                     function_sigs: &self.function_sigs,
+                    struct_defs: &struct_defs,
                     return_type: sig.ret,
                 };
 

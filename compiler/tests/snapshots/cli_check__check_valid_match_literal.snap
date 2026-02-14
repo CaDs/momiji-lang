@@ -1,0 +1,9 @@
+---
+source: tests/cli_check.rs
+assertion_line: 563
+expression: snapshot_view(&result)
+---
+status: 0
+--- stdout ---
+No errors found in <MANIFEST_DIR>/tests/programs/match_literal.mj
+--- stderr ---

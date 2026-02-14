@@ -153,6 +153,23 @@ pub enum TypeError {
         #[label("this statement is unreachable")]
         span: SourceSpan,
     },
+
+    #[error("Undefined struct '{name}'")]
+    #[diagnostic(code(types::undefined_struct))]
+    UndefinedStruct {
+        name: String,
+        #[label("not found")]
+        span: SourceSpan,
+    },
+
+    #[error("Undefined field '{field}' on struct '{struct_name}'")]
+    #[diagnostic(code(types::undefined_field))]
+    UndefinedField {
+        struct_name: String,
+        field: String,
+        #[label("no such field")]
+        span: SourceSpan,
+    },
 }
 
 /// Runtime errors (interpreter backend)

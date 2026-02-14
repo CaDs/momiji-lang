@@ -59,3 +59,28 @@ fn parity_ranges() {
 fn parity_reassign_print() {
     assert_backend_parity("reassign_print.mj");
 }
+
+#[test]
+fn parity_struct_basic() {
+    assert_backend_parity("struct_basic.mj");
+}
+
+#[test]
+fn parity_struct_in_function() {
+    assert_backend_parity("struct_in_function.mj");
+}
+
+#[test]
+fn parity_match_literal() {
+    assert_backend_parity("match_literal.mj");
+}
+
+#[test]
+fn parity_match_variable() {
+    assert_backend_parity("match_variable.mj");
+}
+
+#[test]
+fn parity_match_in_function() {
+    assert_backend_parity("match_in_function.mj");
+}

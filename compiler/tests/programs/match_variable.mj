@@ -1,0 +1,9 @@
+def main
+  x = 42
+  match x
+  when 0 =>
+    puts(0)
+  when n =>
+    puts(n)
+  end
+end

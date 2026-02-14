@@ -7,6 +7,17 @@ use miette::{IntoDiagnostic, WrapErr};
 
 use crate::parser::ast::TypeKind;
 
+const CACHE_FORMAT_VERSION: u32 = 1;
+
+fn compiler_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
+pub struct CacheLoadResult {
+    pub cache: HashMap<String, CacheEntry>,
+    pub version_invalidated: bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileFingerprint {
     pub mtime_nanos: u128,
@@ -106,19 +117,32 @@ pub fn compute_file_metadata(file: &Path) -> miette::Result<FileMetadata> {
         Report::new(e).with_source_code(NamedSource::new(file_name.clone(), source.clone()))
     })?;
 
-    // API hash from function signatures
+    // API hash from function and struct signatures
     let mut hasher = DefaultHasher::new();
     for item in &ast.items {
-        let Item::Function(function) = item;
-        function.name.hash(&mut hasher);
-        function.params.len().hash(&mut hasher);
-        for param in &function.params {
-            param.name.hash(&mut hasher);
-            type_kind_fingerprint(&param.ty.kind).hash(&mut hasher);
-        }
-        match &function.return_type {
-            Some(annotation) => type_kind_fingerprint(&annotation.kind).hash(&mut hasher),
-            None => "Unit".hash(&mut hasher),
+        match item {
+            Item::Function(function) => {
+                "fn".hash(&mut hasher);
+                function.name.hash(&mut hasher);
+                function.params.len().hash(&mut hasher);
+                for param in &function.params {
+                    param.name.hash(&mut hasher);
+                    type_kind_fingerprint(&param.ty.kind).hash(&mut hasher);
+                }
+                match &function.return_type {
+                    Some(annotation) => type_kind_fingerprint(&annotation.kind).hash(&mut hasher),
+                    None => "Unit".hash(&mut hasher),
+                }
+            }
+            Item::Struct(struct_def) => {
+                "struct".hash(&mut hasher);
+                struct_def.name.hash(&mut hasher);
+                struct_def.fields.len().hash(&mut hasher);
+                for field in &struct_def.fields {
+                    field.name.hash(&mut hasher);
+                    type_kind_fingerprint(&field.ty.kind).hash(&mut hasher);
+                }
+            }
         }
     }
     let api_hash = hasher.finish();
@@ -144,58 +168,103 @@ pub fn type_kind_fingerprint(kind: &TypeKind) -> String {
     }
 }
 
-pub fn load_check_cache(path: &Path) -> miette::Result<HashMap<String, CacheEntry>> {
-    let mut cache = HashMap::new();
+pub fn load_check_cache(path: &Path) -> miette::Result<CacheLoadResult> {
     if !path.exists() {
-        return Ok(cache);
+        return Ok(CacheLoadResult {
+            cache: HashMap::new(),
+            version_invalidated: false,
+        });
     }
 
     let contents = fs::read_to_string(path)
         .into_diagnostic()
         .wrap_err_with(|| format!("Failed to read check cache at {}", path.display()))?;
 
-    for line in contents.lines() {
-        let columns: Vec<&str> = line.split('\t').collect();
-        if columns.len() < 3 {
-            continue;
-        }
-        let key = columns[0];
-        let Ok(mtime_nanos) = columns[1].parse::<u128>() else {
-            continue;
-        };
-        let Ok(size) = columns[2].parse::<u64>() else {
-            continue;
-        };
-        let api_hash = columns
-            .get(3)
-            .and_then(|raw| raw.parse::<u64>().ok())
-            .unwrap_or(0);
-
-        // Columns 4 and 5 are exports_csv and deps_csv (added in Phase 2).
-        // Old 4-column caches will have empty lists, triggering a cold-start recheck.
-        let exports = columns
-            .get(4)
-            .filter(|s| !s.is_empty())
-            .map(|s| s.split(',').map(String::from).collect())
-            .unwrap_or_default();
-        let external_deps = columns
-            .get(5)
-            .filter(|s| !s.is_empty())
-            .map(|s| s.split(',').map(String::from).collect())
-            .unwrap_or_default();
-
-        cache.insert(
-            key.to_string(),
-            CacheEntry {
-                fingerprint: FileFingerprint { mtime_nanos, size },
-                api_hash,
-                exports,
-                external_deps,
-            },
-        );
+    if contents.is_empty() {
+        return Ok(CacheLoadResult {
+            cache: HashMap::new(),
+            version_invalidated: false,
+        });
     }
 
-    Ok(cache)
+    let mut lines = contents.lines();
+    let first_line = lines.next().unwrap_or("");
+
+    // Check for header line
+    if let Some(rest) = first_line.strip_prefix("# momiji-cache ") {
+        let expected = format!("v{} compiler={}", CACHE_FORMAT_VERSION, compiler_version());
+        if rest != expected {
+            return Ok(CacheLoadResult {
+                cache: HashMap::new(),
+                version_invalidated: true,
+            });
+        }
+        // Header matches, parse remaining lines as data
+    } else if first_line.starts_with('#') {
+        // Some other comment header we don't recognize
+        return Ok(CacheLoadResult {
+            cache: HashMap::new(),
+            version_invalidated: true,
+        });
+    } else {
+        // No header (old format) — first line is data, treat as version mismatch
+        return Ok(CacheLoadResult {
+            cache: HashMap::new(),
+            version_invalidated: true,
+        });
+    }
+
+    let mut cache = HashMap::new();
+    for line in lines {
+        if line.starts_with('#') {
+            continue;
+        }
+        parse_cache_data_line(line, &mut cache);
+    }
+
+    Ok(CacheLoadResult {
+        cache,
+        version_invalidated: false,
+    })
+}
+
+fn parse_cache_data_line(line: &str, cache: &mut HashMap<String, CacheEntry>) {
+    let columns: Vec<&str> = line.split('\t').collect();
+    if columns.len() < 3 {
+        return;
+    }
+    let key = columns[0];
+    let Ok(mtime_nanos) = columns[1].parse::<u128>() else {
+        return;
+    };
+    let Ok(size) = columns[2].parse::<u64>() else {
+        return;
+    };
+    let api_hash = columns
+        .get(3)
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .unwrap_or(0);
+
+    let exports = columns
+        .get(4)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.split(',').map(String::from).collect())
+        .unwrap_or_default();
+    let external_deps = columns
+        .get(5)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.split(',').map(String::from).collect())
+        .unwrap_or_default();
+
+    cache.insert(
+        key.to_string(),
+        CacheEntry {
+            fingerprint: FileFingerprint { mtime_nanos, size },
+            api_hash,
+            exports,
+            external_deps,
+        },
+    );
 }
 
 pub fn save_check_cache(path: &Path, cache: &HashMap<String, CacheEntry>) -> miette::Result<()> {
@@ -214,6 +283,11 @@ pub fn save_check_cache(path: &Path, cache: &HashMap<String, CacheEntry>) -> mie
     entries.sort_by(|a, b| a.0.cmp(b.0));
 
     let mut out = String::new();
+    out.push_str(&format!(
+        "# momiji-cache v{} compiler={}\n",
+        CACHE_FORMAT_VERSION,
+        compiler_version()
+    ));
     for (key, value) in entries {
         out.push_str(key);
         out.push('\t');
@@ -246,20 +320,61 @@ mod tests {
         f
     }
 
-    #[test]
-    fn load_old_4_column_format() {
-        let f = temp_cache_file("/path/a.mj\t1000\t200\t999\n");
-        let cache = load_check_cache(f.path()).unwrap();
-        let entry = cache.get("/path/a.mj").unwrap();
-        assert_eq!(entry.fingerprint.mtime_nanos, 1000);
-        assert_eq!(entry.fingerprint.size, 200);
-        assert_eq!(entry.api_hash, 999);
-        assert!(entry.exports.is_empty());
-        assert!(entry.external_deps.is_empty());
+    fn valid_header() -> String {
+        format!(
+            "# momiji-cache v{} compiler={}\n",
+            CACHE_FORMAT_VERSION,
+            compiler_version()
+        )
     }
 
     #[test]
-    fn round_trip_with_exports_and_deps() {
+    fn load_cache_with_valid_header() {
+        let contents = format!(
+            "{}/path/a.mj\t1000\t200\t999\tadd,sub\tmul\n",
+            valid_header()
+        );
+        let f = temp_cache_file(&contents);
+        let result = load_check_cache(f.path()).unwrap();
+        assert!(!result.version_invalidated);
+        let entry = result.cache.get("/path/a.mj").unwrap();
+        assert_eq!(entry.fingerprint.mtime_nanos, 1000);
+        assert_eq!(entry.fingerprint.size, 200);
+        assert_eq!(entry.api_hash, 999);
+        assert_eq!(entry.exports, vec!["add", "sub"]);
+        assert_eq!(entry.external_deps, vec!["mul"]);
+    }
+
+    #[test]
+    fn load_cache_with_mismatched_format_version() {
+        let f = temp_cache_file("# momiji-cache v999 compiler=0.1.0\n/path/a.mj\t1\t2\t3\n");
+        let result = load_check_cache(f.path()).unwrap();
+        assert!(result.version_invalidated);
+        assert!(result.cache.is_empty());
+    }
+
+    #[test]
+    fn load_cache_with_mismatched_compiler_version() {
+        let contents = format!(
+            "# momiji-cache v{} compiler=99.99.99\n/path/a.mj\t1\t2\t3\n",
+            CACHE_FORMAT_VERSION
+        );
+        let f = temp_cache_file(&contents);
+        let result = load_check_cache(f.path()).unwrap();
+        assert!(result.version_invalidated);
+        assert!(result.cache.is_empty());
+    }
+
+    #[test]
+    fn load_cache_without_header_old_format() {
+        let f = temp_cache_file("/path/a.mj\t1000\t200\t999\n");
+        let result = load_check_cache(f.path()).unwrap();
+        assert!(result.version_invalidated);
+        assert!(result.cache.is_empty());
+    }
+
+    #[test]
+    fn round_trip_preserves_header() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cache.tsv");
 
@@ -278,7 +393,21 @@ mod tests {
         );
 
         save_check_cache(&path, &cache).unwrap();
-        let loaded = load_check_cache(&path).unwrap();
-        assert_eq!(cache, loaded);
+
+        // Verify header is present in the file
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.starts_with("# momiji-cache v"));
+
+        let result = load_check_cache(&path).unwrap();
+        assert!(!result.version_invalidated);
+        assert_eq!(cache, result.cache);
+    }
+
+    #[test]
+    fn load_empty_file() {
+        let f = temp_cache_file("");
+        let result = load_check_cache(f.path()).unwrap();
+        assert!(!result.version_invalidated);
+        assert!(result.cache.is_empty());
     }
 }
